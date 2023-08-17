@@ -1,2 +1,1 @@
-# oc-ic
-From the investigation "One-Class Image Classification with AI Algorithms"
+# One-Class Image Classification with AI Algorithms
