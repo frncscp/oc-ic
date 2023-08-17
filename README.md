@@ -1,1 +1,11 @@
 # One-Class Image Classification with AI Algorithms
+- Convolutional Neural Networks
+   - Autoencoders
+   - Generative Adversarial Networks
+   - Fully Conected Networks
+- Anomaly Detection Algorithms
+   - One Class Support Vector Machines
+   - Isolation Forests
+   - Decision Trees
+- Visual Transformers
+- Zero-Shot Classification
