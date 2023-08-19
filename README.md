@@ -1,6 +1,6 @@
 # One-Class Image Classification with AI Algorithms
 
-This research aims to find the most optimal way to perform image classification where just one type of class is important,
+This research aims to find the most optimal way to perform image classification where just one type of class is important. The following algotithms are used:
 
 - Convolutional Neural Networks
    - Autoencoders
