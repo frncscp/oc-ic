@@ -179,6 +179,72 @@ class Prediction_Analysis():
             results[model_name] = history
         return results
 
+def graphAnalysis(dic = None, stat_name='ROC', allInOne=True, save = True, path = os.getcwd()):
+    stat_names = ['ROC', 'SENSIBILITY', 'RECALL', 'R','P', 'PRECISION','F1', 'FNR']
+    choose='ROC'
+    line_styles = ['-','--','-.',':']
+    plt.figure(figsize=(12.8,9.6))
+    plt.grid()
+    if stat_name in stat_names:
+        choose=stat_name
+    for model_name, history in dic.items():
+        sensibility = []
+        precision = []
+        especificidad = []
+        thresholds = []
+        fnr = []
+        f1 = []
+        for t,value in history.items():
+            sensibility.append(value['sensibility'])
+            precision.append(value['precision'] if value['precision']==value['precision'] else 0)
+            thresholds.append(t)
+            especificidad.append(1-value['especificidad'])
+            f1.append(2*value['sensibility']*value['precision']/(value['sensibility']+value['precision']))
+            fnr.append(value['false_negative_rate'])
+        xname='Threshold'
+        if choose in ['SENSIBILITY', 'RECALL', 'R']:
+            x=thresholds
+            y=sensibility
+            yname='Sensibilidad'
+        elif choose in ['P', 'PRECISION']:
+            x=thresholds
+            y=precision
+            yname='Precision'
+        elif choose == 'F1':
+            x=thresholds
+            y=f1
+            yname='F1-Score'
+        elif choose == 'FNR':
+            x = thresholds
+            y = fnr
+            yname='FNR'
+        else: # ROC by default
+            x=especificidad
+            y=sensibility
+            xname='Especificidad'
+            yname='Sensibilidad'
+        plt.plot(x, y, label=model_name, linestyle =line_styles[random.randint(0,3)])
+        if not allInOne:
+            plt.title("Curva "+stat_name)
+            plt.legend(fontsize=6)
+            plt.xlabel(xname)
+            plt.ylabel(yname)
+            plt.show()
+            if save:
+                plt.savefig(os.path.join(path, model_name, stat_name))
+    if allInOne:
+        plt.title("Curva "+stat_name)
+        plt.legend(fontsize=12)
+        plt.xlabel(xname)
+        plt.ylabel(yname)
+        plt.show()
+        if save:
+            plt.savefig(os.path.join(path, stat_name))
+
+def graphAll(dic, path):
+    for stat_name in ['ROC', 'RECALL', 'PRECISION','F1', 'FNR']:
+        graphAnalysis(dic = dic, stat_name = stat_name, path = path)
+
 def calculateStats(results_dictionary, threshold, output_path):
     if type(threshold) != list:
         threshold = [threshold]
@@ -235,7 +301,7 @@ def train_and_save():
     anne = ReduceLROnPlateau(monitor='val_auc', factor=0.2, patience=5, verbose=1, min_lr=0.001)
     training(models_path, output_path, train, test, valid)
 
-def analyze_data():
+def analyze_data(plot = False, save = True):
     data = get_analysis_data()
     if data["framework"] == 'tf':
         analysis = Prediction_Analysis(
@@ -248,6 +314,11 @@ def analyze_data():
             output_path = data["output_path"])
         predictions = analysis.getPredictions(mode= 'tf')
         results = calculateStats(predictions, data["score_threshold"])
+        
+        if plot and data["score_threshold"] > 1:
+            graphAll(results, data["output_path"])
+        elif plot and data["score_threshold"] <= 1:
+            print('You need more than one threshold to create a graph')
 
     elif data["framework"] == 'transformers':
         analysis = Prediction_Analysis(
@@ -260,6 +331,11 @@ def analyze_data():
             output_path = data["output_path"])
         predictions = analysis.getPredictions(mode= 'hf')
         results = calculateStats(predictions, data["score_threshold"])
+        
+        if plot and data["score_threshold"] > 1:
+            graphAll(results, data["output_path"])
+        elif plot and data["score_threshold"] <= 1:
+            print('You need more than one threshold to create a graph')
     
     print('Done!')
 
