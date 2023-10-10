@@ -14,8 +14,8 @@ This research aims to find the most optimal way to perform image classification 
 - *Zero-Shot Classification (Great performance, medium-to-slow)*
 
 ## Getting started
-To be able to use the training and analysis code, you will need to met the following requirements:
-- Use .h5 Tensorflow or HuggingFace models.
+To be able to use the training and analysis code, you will need to meet the following requirements:
+- Use .h5 Tensorflow/Keras (training/testing) or HuggingFace (testing) models.
 - Have a training dataset consisting of a positive and a pseudo-negative class, divided just on classes, not on subsets.
 
 - You should have two folders for your models:
