@@ -3,15 +3,15 @@
 This research aims to find the most optimal way to perform image classification where just one type of class is important. The following algotithms are used:
 
 - Convolutional Neural Networks
-   - Autoencoders
-   - Generative Adversarial Networks
-   - Fully Conected Networks (Mid perfomance, fast)
+   - Autoencoders (to be tested)
+   - Generative Adversarial Networks (to be tested)
+   - *Fully Conected Networks (Mid perfomance, fast)*
 - Anomaly Detection Algorithms
-   - One Class Support Vector Machines
-   - Isolation Forests
-   - Decision Trees
-- Visual Transformers (Great perfromance, medium-to-fast)
-- Zero-Shot Classification (Great performance, slow)
+   - One Class Support Vector Machines (to be tested)
+   - Isolation Forests (to be tested)
+   - Decision Trees (to be tested)
+- *Visual Transformers (Great perfromance, medium-to-fast)*
+- *Zero-Shot Classification (Great performance, medium-to-slow)*
 
 ## Getting started
 To be able to use the training and analysis code, you will need to met the following requirements:
