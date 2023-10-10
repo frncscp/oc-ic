@@ -9,26 +9,47 @@ from keras.models import model_from_json
 from tensorflow.keras.models import load_model
 from tensorflow.keras.utils import image_dataset_from_directory
 
-def get_training_data():
-    sfs = {
-    'models_path' : input("Type the directory where the models are stored: "),
+def get_training_data(): #this function asks the user all the data needed for training
+    
+    sfs = { 
+    'non_trained_models_path' : input("Type the directory where the non-trained models are stored (if there are none, type N/n): "),
+    'trained_models_path' : input("Type the directory where the models to be fine-tuned are stored (if there are none, type N/n):"),
     'output_path' : input("Type the directory where you want to save the models and the history of each model: "),
     'dataset' : input("Type the directory where the dataset is stored (it has to be separated into classes, and not splitted in train, test or valid subsets): "),
     'epochs' : int(input("Type the number of epochs you want to train the models: ")),
-    'GPU' : input("Do you want to use GPU? (y/n or any key): ")}
-
+    'models_folders' : {
+        0 : None,
+        1 : None},
+    'models_paths' : []
+    }
+    
+    aux = []
+    
     for label, value in sfs.items():
-        if label in ['models_path', 'output_path', 'dataset']:
-            check_dir(sfs[label])
-            sfs[label] = check_dir(sfs[label])
-        if label == 'GPU' and value == 'y':
-            sfs[label] = True
-        else:
-            sfs[label] = False
+        
+        if label == 'non_trained_models_path' and sfs[label].lower() != "n":
+            aux.extend(os.listdir(value))
+            sfs['models_folders'][0] = value
+            
+        elif label == 'trained_models_path' and sfs[label].lower() != "n":
+            aux.extend(os.listdir(value))
+            sfs['models_folders'][1] = value           
+        
+        if label in ['output_path', 'dataset']:
+            #check if the values are in a valid address directory
+            check_dir(value)
+            sfs[label] = check_dir(value)
+            
+    for model in aux:
+        if model in os.listdir(sfs["models_folders"][0]):
+            sfs["models_paths"].append((model, 0))
+        elif model in os.listdir(sfs["models_folders"][1]):
+            sfs["models_paths"].append((model, 1))
+    
     return sfs
 
-def get_analysis_data():
-    framework = input("Type the framework you used to train the models (tf or hf): ")
+def get_analysis_data(): #same as get_training_data() but for analysis
+    framework = input("Type the framework you used to train the models (tf or hf): ") #tensorflow/huggingface
     sfs = {}
 
     if framework.lower() == 'tf':
@@ -52,11 +73,11 @@ def get_analysis_data():
             "output_path" : input("Type the directory where you want to save the results: ")}
     return sfs
 
-
-#it takes the path to the dataset, the batch size, the image size, the train size and 
+#it takes the path to the dataset, the batch size, the image size, the train size and
 #the valid size as inputs, and returns the train, test and valid subsets
-def dataset(datadir, batch_size = 32, image_size = (224, 224), train_size = .6, valid_size = .2):
-    data =  image_dataset_from_directory(datadir, batch_size= batch_size, image_size= image_size)
+def dataset(datadir, batch_size = 16, image_size = (224, 224), train_size = .6, valid_size = .2):
+    AUTOTUNE = tf.data.AUTOTUNE
+    data =  image_dataset_from_directory(datadir, batch_size= batch_size, image_size= image_size, shuffle=True, label_mode = 'binary')
     data = data.map(lambda x,y: (x/255, y)) #normaliza los datos
 
     #cálculos de tamaños de los subsets de entrenamiento y validación
@@ -64,65 +85,101 @@ def dataset(datadir, batch_size = 32, image_size = (224, 224), train_size = .6, 
     valid_size = int(len(data)*valid_size)
 
     #asignación de tamaños a cada subset
-    train = data.take(train_size)
-    valid = data.skip(train_size).take(valid_size)
-    test = data.skip(train_size+valid_size).take(len(data)-(train_size+valid_size))
+    train = data.take(train_size).prefetch(buffer_size=AUTOTUNE)
+    valid = data.skip(train_size).take(valid_size).prefetch(buffer_size=AUTOTUNE)
+    test = data.skip(train_size+valid_size).take(len(data)-(train_size+valid_size)).prefetch(buffer_size=AUTOTUNE)
+    
 
     return train, test, valid
 
-#takes a model as input and returns the same model, but reinitialized
-def reinitialize(model):
-    json_string = model.to_json()
-    return model_from_json(json_string)
-
-#it takes the models, the output path, the train, test and valid subsets, 
-# the number of epochs, the optimizer and if you want to use GPU as inputs,
-# it saves the models in the output path and the history of each model in the same directory
-def training(models, output_path, train, test, valid, epochs = 20, optimizer = 'SGD', GPU = False):
-    if not os.path.exists(output_path):
-        os.makedirs(output_path)
+#takes a model as input and returns the same model, but reinitialized with random weights and a data augmentation layer
+def reinitialize(model, optimizer, finetune=False, pool="max", fine_tune_at=None):
     
-    for address in models:
-        model = load_model(address)
-        model_name = address.split(models + r'/')[1].split('.h5')[0]
-        print(f'Training {model_name}...')
+    data_augmentation = tf.keras.Sequential([
+    tf.keras.layers.RandomFlip('horizontal'),
+    tf.keras.layers.RandomRotation(0.2),
+    tf.keras.layers.RandomZoom(0.2),
+    tf.keras.layers.RandomContrast(0.2),
+    tf.keras.layers.RandomTranslation(0.1, 0.1),])
 
-        model = reinitialize(model)
+    inputs = tf.keras.Input(shape = (224, 224, 3))
+    x = data_augmentation(inputs)
+    
+    if finetune:
+        for layer in model.layers[:fine_tune_at]: #freeze layer from a number onwards
+            layer.trainable = False
+        x = model(x)
+        if pool == "avg":
+            x = tf.keras.layers.GlobalAveragePooling2D()(x)
+        elif pool == "max":
+            x = tf.keras.layers.MaxPooling2D()(x)
+            x = tf.keras.layers.Flatten()(x) #due to possible mismatch of shapes
+        outputs = tf.keras.layers.Dense(1, activation = "sigmoid")(x)
+            
+    else:
+        json_string = model.to_json()
+        json_model = model_from_json(json_string)
+        outputs = json_model(x)
+    
+    model = tf.keras.Model(inputs, outputs)
+    model.compile(optimizer, loss=tf.keras.losses.BinaryCrossentropy(), metrics=['accuracy', tf.keras.metrics.AUC()])
         
-        model.compile(optimizer, loss = tf.keras.losses.BinaryCrossentropy(), metrics = ['accuracy', tf.keras.metrics.AUC()])
+    return model
+
+#it takes the models, the output path, the train, test and valid subsets,
+# the number of epochs and the optimizers 
+# it saves the models in the output path and the history of each model in the same directory
+def training(models_names, folders, output_path, train, test, valid, epochs, optimizers = ['SGD', 'adam'] ):
+    
+    strategy = tf.distribute.experimental.MultiWorkerMirroredStrategy() 
+    cnns_root = "ptctrn_v"
+    anne = ReduceLROnPlateau(monitor='val_loss', factor=0.3, patience=10, verbose=1, min_lr=5e-5)
+    
+    if not os.path.exists(output_path):
+        os.makedirs(output_path)        
         
-        if GPU:
-            with tf.device('/device:GPU:0'):
+    def execute(addresses, optimizers, output_path):
+        
+        for model_file, index in addresses:
+            folder = folders[index]
+            model = load_model(os.path.join(folder, model_file))
+            model_name = model_file.split(".h5")[0]
+            print(f'Training {model_name}...')
+            
+            for optimizer in optimizers:
+                model = reinitialize(model, optimizer) if index == 0 else reinitialize(model, optimizer, fine_tune = True, 
+                                                                                       fine_tune_at = floor(0.4*model.layers))
                 hist = model.fit(train,
-                epochs = epochs,
-                validation_data = valid,
-                callbacks = [tensorboard_callback , anne],
-                use_multiprocessing=True)
-        else:
-            hist = model.fit(train,
-            epochs = epochs,
-            validation_data = valid,
-            callbacks = [tensorboard_callback , anne],
-            use_multiprocessing=True)
-
-        model_dir = os.path.join(path, model_name)
+                                 epochs=epochs,
+                                 validation_data=valid,
+                                 callbacks=[anne],
+                                 use_multiprocessing=True)
+                
+                model_dir = os.path.join(output_path, f"{model_name}-{optimizer}")
+                
+                if not os.path.exists(model_dir):
+                    os.makedirs(model_dir)
+                    
+                model.save(os.path.join(model_dir, model_file)) #address.split(cnns_root + r'/')[1]
+                #np.save(f'{model_dir}/{address.split(cnns_root + r"/")[1].split(".h5")[0]}_epoch_history.npy', hist.history)
+                np.save(os.path.join(model_dir, model_name+"_epoch_history.npy"), hist.history)
         
-        if not os.path.exists(model_dir):
-            os.makedirs(model_dir)
-        model.save(model_dir + address.split(cnns_root + r'/')[1])
-        np.save(f'{model_dir}/{address.split(cnns_root + r"/")[1].split(".h5")[0]}_epoch_history.npy', hist.history)
+    with strategy.scope():
+         execute(models_names, optimizers, output_path)
 
 #check if a string is a valid directory, if not, it asks for a new one
 def check_dir(string):
-    while not os.path.isdir(string):
-        string = input(f'{string} is not a valid directory\nTry Again: ')
+    while not os.path.exists(string):
+        try:
+            os.makedirs(string)
+        except:
+            string = input(f'{string} is not a valid directory\nTry Again: ')
     return string
-
 
 #This part of the code is for metrics analysis, the code above is for training the models and getting the data
 class Prediction_Analysis():
-    
-    def __init__(self, model_dir = None, folders = None, dataset_class = bool, image_height = 224, image_width = 224, transformers = None):       
+
+    def __init__(self, model_dir = None, folders = None, dataset_class = bool, image_height = 224, image_width = 224, transformers = None):
         self.model_dir = model_dir
         self.folders = folders
         self.image_height = image_height
@@ -130,21 +187,21 @@ class Prediction_Analysis():
         self.transformers = transformers
 
     @tf.function #this decorator allows the predictions to be much faster
-    def tf_predict(self, model_list, img = None, weights = None): 
-        #the model and weight's lists have to be in the same order. i.e: [model_1, model_2], [weight_1, weight_2] 
+    def tf_predict(self, model_list, img = None, weights = None):
+        #the model and weight's lists have to be in the same order. i.e: [model_1, model_2], [weight_1, weight_2]
         y_gorrito = 0
         if weights is None:
             weights = [1] * len(model_list)
         for model, weight in zip(model_list, weights):
             y_gorrito += tf.cast(model(tf.expand_dims(img/255., 0)), dtype=tf.float32)*weight
         return y_gorrito / sum(weights)
-        
-    def hf_predict(self, classifiers, img):
+
+    def hf_predict(self, classifiers, img, label = 'Patacon-True'): #gets the "Patacón-True" label probability
         y_gorrito = 0
         for classifier in classifiers:
-                classifier = classifier(img)                            
+                classifier = classifier(img)
                 for clase in classifier:
-                    if clase['label'] == 'Patacon-True':
+                    if clase['label'] == label:
                         y_gorrito += clase["score"]
         return y_gorrito / len(classifiers)
 
@@ -156,12 +213,12 @@ class Prediction_Analysis():
         img_decode = tf.image.decode_image(img_file, channels=3, expand_animations = False)
         resize = tf.image.resize(img_decode,(height, width))
         return resize
-    
+
     #returns the dictionary that serves as input to the calculateStats function
     def getPredictions(self, mode = 'tf'):
         results = {}
         ensemble = [(load_model(model), model) for model in self.model_dir] if mode == 'tf' else [(pipeline("image-classification", model= transformer), transformer) for transformer in self.transformers]
-        
+
         for model, model_name in ensemble:
             history = []
             for pair in self.folders:
@@ -169,8 +226,8 @@ class Prediction_Analysis():
                 for image in os.listdir(folder):
                     try: #preprocess the image
                         resize = self.preprocess(image, (self.image_height, self.image_width), folder)
-                    except: 
-                        continue            
+                    except:
+                        continue
                     if mode == 'tf':
                         y_gorrito = float(self.tf_predict([model], resize))
                     elif mode == 'transformers':
@@ -179,7 +236,8 @@ class Prediction_Analysis():
             results[model_name] = history
         return results
 
-def graphAnalysis(dic = None, stat_name='ROC', allInOne=True, save = True, path = os.getcwd()):
+def graphAnalysis(dic = None, stat_name='ROC', allInOne=True, save = True, path = os.getcwd()): 
+    #part of the calculateStats function, initializes and plot all variables needed
     stat_names = ['ROC', 'SENSIBILITY', 'RECALL', 'R','P', 'PRECISION','F1', 'FNR']
     choose='ROC'
     line_styles = ['-','--','-.',':']
@@ -241,13 +299,13 @@ def graphAnalysis(dic = None, stat_name='ROC', allInOne=True, save = True, path 
         if save:
             plt.savefig(os.path.join(path, stat_name))
 
-def graphAll(dic, path):
+def graphAll(dic, path): #graph all the options in graphAnalysis
     for stat_name in ['ROC', 'RECALL', 'PRECISION','F1', 'FNR']:
         graphAnalysis(dic = dic, stat_name = stat_name, path = path)
 
 def calculateStats(results_dictionary, threshold, output_path):
     if type(threshold) != list:
-        threshold = [threshold]
+        threshold = [threshold] #hehe
     statsResults={}
     for key, value in results_dictionary.items():
         statsResults[key]={}
@@ -261,16 +319,16 @@ def calculateStats(results_dictionary, threshold, output_path):
                     predictions.append(1)
                 else:
                     predictions.append(0)
-            
+
             confMatrix=tf.math.confusion_matrix(labels, predictions)
-            confusion_matrix_array = np.array(confMatrix)
-            
+            confusion_matrix_array = np.array(confMatrix) #for the following operations below:
+
             sensibility = confusion_matrix_array[1][1]/(confusion_matrix_array[1][1]+confusion_matrix_array[1][0])
             precision = confusion_matrix_array[1][1]/(confusion_matrix_array[1][1]+confusion_matrix_array[0][1])
             especificidad=confusion_matrix_array[0][0]/(confusion_matrix_array[0][0]+confusion_matrix_array[0][1])
             false_negative_rate = confusion_matrix_array[1][0]/(confusion_matrix_array[1][0]+confusion_matrix_array[0][0])
             f1Score= 2*sensibility*precision/(sensibility+precision)
-            
+
             statsResults[key][t]['matrix'] = confusion_matrix_array
             statsResults[key][t]['sensibility'] = sensibility
             statsResults[key][t]['precision'] = precision
@@ -285,6 +343,8 @@ def calculateStats(results_dictionary, threshold, output_path):
             plt.savefig(final_path)
     return statsResults
 
+#############################################################
+#this functions are not used, but could be useful
 def saveDictionary(dictionary, path,file_name='oc-ic.pickle'):
     file_path = os.path.join(path,file_name)
     with open(file_path, "wb") as file:
@@ -294,55 +354,67 @@ def loadDictionary(path,file_name='oc-ic.pickle'):
     file_path = os.path.join(path,file_name)
     with open(file_path, "rb") as file:
         return pickle.load(file)
+#############################################################
 
+#a function that executes all functions needed to perform and save training
 def train_and_save():
-    models_path, output_path, training_data, epochs, gpu = get_training_data().values()
+    non_trained_dir, trained_dir, output_path, training_data, epochs, folders, models_paths = get_training_data().values()
     train, test, valid = dataset(training_data)
     anne = ReduceLROnPlateau(monitor='val_auc', factor=0.2, patience=5, verbose=1, min_lr=0.001)
-    training(models_path, output_path, train, test, valid)
+    training(models_paths, folders, output_path, train, test, valid, epochs)
 
+#a function that executes all functions needed to perform testing and to save its results
 def analyze_data(plot = False, save = True):
     data = get_analysis_data()
-    if data["framework"] == 'tf':
+    if data["framework"] == 'tf': #tensorflow
         analysis = Prediction_Analysis(
-            model_dir = data["model_dir"], 
-            folders = data["folders"].replace(' ', '').split(','), 
-            image_height = data["image_height"], 
-            image_width = data["image_width"], 
+            model_dir = data["model_dir"],
+            folders = data["folders"].replace(' ', '').split(','),
+            image_height = data["image_height"],
+            image_width = data["image_width"],
             score_threshold = data["score_threshold"],
             dataset_class = data["dataset_class"],
             output_path = data["output_path"])
         predictions = analysis.getPredictions(mode= 'tf')
         results = calculateStats(predictions, data["score_threshold"])
-        
+
         if plot and data["score_threshold"] > 1:
             graphAll(results, data["output_path"])
         elif plot and data["score_threshold"] <= 1:
             print('You need more than one threshold to create a graph')
 
-    elif data["framework"] == 'transformers':
+    elif data["framework"] == 'transformers': #huggingface
         analysis = Prediction_Analysis(
-            transformers = data["transformers"].replace(' ', '').split(','), 
-            folders = data["folders"].replace(' ', '').split(','), 
-            image_height = data["image_height"], 
-            image_width = data["image_width"], 
+            transformers = data["transformers"].replace(' ', '').split(','),
+            folders = data["folders"].replace(' ', '').split(','),
+            image_height = data["image_height"],
+            image_width = data["image_width"],
             score_threshold= data["score_threshold"],
             dataset_class = data["dataset_class"],
             output_path = data["output_path"])
         predictions = analysis.getPredictions(mode= 'hf')
         results = calculateStats(predictions, data["score_threshold"])
-        
+
         if plot and data["score_threshold"] > 1:
             graphAll(results, data["output_path"])
         elif plot and data["score_threshold"] <= 1:
-            print('You need more than one threshold to create a graph')
-    
+            print('You need more than one threshold to create a graph') #one coordinate plotted is just a point
     print('Done!')
 
 if __name__ == "__main__":
-    choice = input('Type T/t for training and saving, and P/p for predicting analysis: ')
-    if choice.lower() == 't':
-        train_and_save()
-    elif choice.lower() == 'p':
-        analyze_data()
-    input("Press Enter to close...")
+    while True:
+        choice = input('Type T/t for training and saving, and P/p for predicting analysis: ')
+    
+        if choice.lower() == 't':
+            train_and_save()
+            
+        elif choice.lower() == 'p':
+            analyze_data()
+            
+        choice = input("If you wish to execute a new task, press Y/y.\nOtherwise, press any key: ")
+        
+        if choice.lower == "c":
+            continue
+            
+        else:
+            break
