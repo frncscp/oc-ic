@@ -18,4 +18,10 @@ To be able to use the training and analysis code, you will need to met the follo
 - Use .h5 Tensorflow or HuggingFace models.
 - Have a training dataset consisting of a positive and a pseudo-negative class, divided just on classes, not on subsets.
 
+- You should have two folders for your models:
+     - One for models that are going to have their weights reinitialized randomly. 
+     - The other for models where their weights matter and you want to fine-tune them.
+       
+  _Note that for training, this code only accepts Tensorflow/Keras models, but you can use already trained Hugging Face models for testing._
+
 Then you can execute training_and_analysis.py! You'll have to answer some questions to gather the data needed for the computation.
