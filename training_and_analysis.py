@@ -1,13 +1,22 @@
 import os
+import cv2
 import pickle
 import random
 import numpy as np
 import tensorflow as tf
 import matplotlib.pyplot as plt
+import logging
+from math import floor
 from sklearn import metrics as mt
 from keras.models import model_from_json
+from tensorflow.keras import mixed_precision
 from tensorflow.keras.models import load_model
 from tensorflow.keras.utils import image_dataset_from_directory
+from tensorflow.keras.preprocessing.image import ImageDataGenerator
+from tensorflow.keras.callbacks import ReduceLROnPlateau
+
+policy = mixed_precision.Policy('mixed_float16')
+mixed_precision.set_global_policy(policy)
 
 def get_training_data(): #this function asks the user all the data needed for training
     
@@ -45,6 +54,7 @@ def get_training_data(): #this function asks the user all the data needed for tr
             sfs["models_paths"].append((model, 0))
         elif model in os.listdir(sfs["models_folders"][1]):
             sfs["models_paths"].append((model, 1))
+        
     
     return sfs
 
@@ -55,29 +65,62 @@ def get_analysis_data(): #same as get_training_data() but for analysis
     if framework.lower() == 'tf':
         sfs = {
         "framework" : "tf",
-        "models_path" : input("Type the directory where the models are stored, separated by commas: "),
-        "folders" : input("Type the directories where the folders with the images are stored: "),
-        "dataset_class" : input("Type 1 if the dataset is full of positive class images, or 0 if it's full of negative images: "),
+        "positive_class_folders" : input("Type the directories where the folders with the positive images are stored separated by commas (if there are none, type N/n): "),
+        "negative_class_folders" : input("Type the directories where the folders with the negative images are stored separated by commas (if there are none, type N/n): "),
+        
+        'folders_classes' : {
+        0 : None,
+        1 : None},
+            
+        "folders" : [],
+        
+        "models_path" : input("Type the directory where the models are stored: "),
         "image_height" : input("Type the height of the images: "),
         "image_width" : input("Type the width of the images: "),
-        "output_path" : input("Type the directory where you want to save the results: ")}
+        "output_path" : input("Type the directory where you want to save the results: "),
+        "score_threshold" : [i/100 for i in range(1, 100, 3)]}
+        
+        aux = []
 
     elif framework.lower() == 'hf':
         sfs = {
             "framework" : "hf",
             "transformers names" : input("Type the names of the transformers you want to use, separated by commas: "),
-            "folders" : input("Type the directories where the folders with the images are stored, separated by commas: "),
-            "dataset_class" : input("Type 1 if the dataset is full of positive class images, or 0 if it's full of negative images: "),
+            "positive_class_folders" : input("Type the directories where the folders with the positive images are stored separated by commas (if there are none, type N/n): "),
+            "negative_class_folders" : input("Type the directories where the folders with the negative images are stored separated by commas (if there are none, type N/n): "),
+        
+            'folders_classes' : {
+            0 : None,
+            1 : None},
+            
+            "folders" : [],
             "image_height" : input("Type the desired height of the images: "),
             "image_width" : input("Type the desired width of the images: "),
-            "output_path" : input("Type the directory where you want to save the results: ")}
+            "output_path" : input("Type the directory where you want to save the results: "),
+            "score_threshold" : [i/100 for i in range(1, 100, 3)]}
+        
+    for label, value in sfs.items():
+
+    if label == "negative_class_folders" and sfs[label].lower() != "n":
+        addresses = value.replace(" ", "").split(",")
+
+        for address in addresses:
+            sfs["folders"].append((address, 0))
+
+    elif label == "positive_class_folders" and sfs[label].lower() != "n":
+        addresses = value.replace(" ", "").split(",")
+
+        for address in addresses:
+            sfs["folders"].append((address, 1))
+            
     return sfs
+
 
 #it takes the path to the dataset, the batch size, the image size, the train size and
 #the valid size as inputs, and returns the train, test and valid subsets
 def dataset(datadir, batch_size = 16, image_size = (224, 224), train_size = .6, valid_size = .2):
     AUTOTUNE = tf.data.AUTOTUNE
-    data =  image_dataset_from_directory(datadir, batch_size= batch_size, image_size= image_size, shuffle=True, label_mode = 'binary')
+    data =  image_dataset_from_directory(datadir, batch_size= batch_size, image_size= image_size, shuffle=True)
     data = data.map(lambda x,y: (x/255, y)) #normaliza los datos
 
     #cálculos de tamaños de los subsets de entrenamiento y validación
@@ -109,10 +152,13 @@ def reinitialize(model, optimizer, finetune=False, pool="max", fine_tune_at=None
         for layer in model.layers[:fine_tune_at]: #freeze layer from a number onwards
             layer.trainable = False
         x = model(x)
-        if pool == "avg":
+        
+        if len(x.shape) != 4:
+            pass
+        elif pool == "avg":
             x = tf.keras.layers.GlobalAveragePooling2D()(x)
         elif pool == "max":
-            x = tf.keras.layers.MaxPooling2D()(x)
+            x = tf.keras.layers.MaxPooling2D()(x) 
             x = tf.keras.layers.Flatten()(x) #due to possible mismatch of shapes
         outputs = tf.keras.layers.Dense(1, activation = "sigmoid")(x)
             
@@ -125,13 +171,15 @@ def reinitialize(model, optimizer, finetune=False, pool="max", fine_tune_at=None
     model.compile(optimizer, loss=tf.keras.losses.BinaryCrossentropy(), metrics=['accuracy', tf.keras.metrics.AUC()])
         
     return model
-
 #it takes the models, the output path, the train, test and valid subsets,
 # the number of epochs and the optimizers 
 # it saves the models in the output path and the history of each model in the same directory
 def training(models_names, folders, output_path, train, test, valid, epochs, optimizers = ['SGD', 'adam'] ):
     
     strategy = tf.distribute.experimental.MultiWorkerMirroredStrategy() 
+    #non_trained_addresses = [os.path.join(models, model_name) for model_name in os.listdir(models)]
+    #trained_addresses = []
+    
     cnns_root = "ptctrn_v"
     anne = ReduceLROnPlateau(monitor='val_loss', factor=0.3, patience=10, verbose=1, min_lr=5e-5)
     
@@ -147,8 +195,8 @@ def training(models_names, folders, output_path, train, test, valid, epochs, opt
             print(f'Training {model_name}...')
             
             for optimizer in optimizers:
-                model = reinitialize(model, optimizer) if index == 0 else reinitialize(model, optimizer, fine_tune = True, 
-                                                                                       fine_tune_at = floor(0.4*model.layers))
+                model = reinitialize(model, optimizer) if index == 0 else reinitialize(model, optimizer, finetune = True, 
+                                                                                       fine_tune_at = int(floor(0.4*len(model.layers))))
                 hist = model.fit(train,
                                  epochs=epochs,
                                  validation_data=valid,
@@ -176,24 +224,37 @@ def check_dir(string):
             string = input(f'{string} is not a valid directory\nTry Again: ')
     return string
 
+
 #This part of the code is for metrics analysis, the code above is for training the models and getting the data
 class Prediction_Analysis():
 
-    def __init__(self, model_dir = None, folders = None, dataset_class = bool, image_height = 224, image_width = 224, transformers = None):
+    def __init__(self, model_dir = None, folders = None, image_height = 224, image_width = 224, transformers = None):
         self.model_dir = model_dir
         self.folders = folders
         self.image_height = image_height
         self.image_width = image_width
         self.transformers = transformers
 
-    @tf.function #this decorator allows the predictions to be much faster
-    def tf_predict(self, model_list, img = None, weights = None):
+    #@tf.function #this decorator allows the predictions to be much faster
+    def old_tf_predict(self, model_list, img = None, weights = None):
         #the model and weight's lists have to be in the same order. i.e: [model_1, model_2], [weight_1, weight_2]
+        img_float = tf.cast(img, tf.float32)
         y_gorrito = 0
         if weights is None:
             weights = [1] * len(model_list)
         for model, weight in zip(model_list, weights):
-            y_gorrito += tf.cast(model(tf.expand_dims(img/255., 0)), dtype=tf.float32)*weight
+            y_gorrito += tf.cast(model(tf.expand_dims(img_float/255., 0)), dtype=tf.float32)*weight
+        
+        return y_gorrito / sum(weights)
+    
+    def tf_predict(self, model_list, img = None, weights = None):
+        #the model and weight's lists have to be in the same order. i.e: [model_1, model_2], [weight_1, weight_2]
+        img_float = tf.cast(img, tf.float32)
+        y_gorrito = 0
+        if weights is None:
+            weights = [1] * len(model_list)
+        for model, weight in zip(model_list, weights):
+            y_gorrito += model.predict(tf.expand_dims(img_float/255., 0))
         return y_gorrito / sum(weights)
 
     def hf_predict(self, classifiers, img, label = 'Patacon-True'): #gets the "Patacón-True" label probability
@@ -207,33 +268,49 @@ class Prediction_Analysis():
 
     @tf.function #this function works with selected image file formats
     def preprocess(self, image, size, source):
-        height, width = size
+        height, width = int(size[0]), int(size[1])
+        size_tensor = tf.constant([height, width], dtype=tf.int32)
         image_dir = os.path.join(source, image)
         img_file = tf.io.read_file(image_dir)
         img_decode = tf.image.decode_image(img_file, channels=3, expand_animations = False)
-        resize = tf.image.resize(img_decode,(height, width))
+        resize = tf.image.resize(img_decode, size_tensor)
+        return resize
+    
+    def generic_preprocess(self, image, size, source):
+        size_tuple = (int(size[0]), int(size[1]))
+        image_dir = os.path.join(source, image)
+        img = cv2.imread(image_dir)
+        img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+        resize = cv2.resize(img_rgb, size_tuple)
         return resize
 
     #returns the dictionary that serves as input to the calculateStats function
     def getPredictions(self, mode = 'tf'):
+        
         results = {}
-        ensemble = [(load_model(model), model) for model in self.model_dir] if mode == 'tf' else [(pipeline("image-classification", model= transformer), transformer) for transformer in self.transformers]
-
-        for model, model_name in ensemble:
+        print("Loading models...")
+        ensemble = [(load_model(os.path.join(self.model_dir, model, model.split("-")[0]+".h5")), model.split("-")[0], model.split("-")[1]) for model in os.listdir(self.model_dir)] if mode == 'tf' else [(pipeline("image-classification", model= transformer), transformer) for transformer in self.transformers]
+        print("Loaded!")
+        for model, model_name, optimizer in ensemble:
+            print(f"Performing inference with: {model_name} using {optimizer} as optimizer...")
             history = []
             for pair in self.folders:
                 folder, isPatacon = pair
+                print(pair)
                 for image in os.listdir(folder):
                     try: #preprocess the image
                         resize = self.preprocess(image, (self.image_height, self.image_width), folder)
                     except:
-                        continue
+                        resize = self.generic_preprocess(image, (self.image_height, self.image_width), folder)
+                    #    continue
                     if mode == 'tf':
                         y_gorrito = float(self.tf_predict([model], resize))
+                        print(y_gorrito)
                     elif mode == 'transformers':
                         y_gorrito = float(self.hf_predict([model], os.path.join(folder, image)))
                     history.append((isPatacon,y_gorrito))
-            results[model_name] = history
+            results[model_name+"-"+optimizer] = history
+        saveDictionary(results, path = "/kaggle/working")
         return results
 
 def graphAnalysis(dic = None, stat_name='ROC', allInOne=True, save = True, path = os.getcwd()): 
@@ -343,8 +420,7 @@ def calculateStats(results_dictionary, threshold, output_path):
             plt.savefig(final_path)
     return statsResults
 
-#############################################################
-#this functions are not used, but could be useful
+
 def saveDictionary(dictionary, path,file_name='oc-ic.pickle'):
     file_path = os.path.join(path,file_name)
     with open(file_path, "wb") as file:
@@ -354,7 +430,6 @@ def loadDictionary(path,file_name='oc-ic.pickle'):
     file_path = os.path.join(path,file_name)
     with open(file_path, "rb") as file:
         return pickle.load(file)
-#############################################################
 
 #a function that executes all functions needed to perform and save training
 def train_and_save():
@@ -368,30 +443,27 @@ def analyze_data(plot = False, save = True):
     data = get_analysis_data()
     if data["framework"] == 'tf': #tensorflow
         analysis = Prediction_Analysis(
-            model_dir = data["model_dir"],
-            folders = data["folders"].replace(' ', '').split(','),
+            model_dir = data["models_path"],
+            folders = data["folders"],
             image_height = data["image_height"],
-            image_width = data["image_width"],
-            score_threshold = data["score_threshold"],
-            dataset_class = data["dataset_class"],
-            output_path = data["output_path"])
+            image_width = data["image_width"])
+        
         predictions = analysis.getPredictions(mode= 'tf')
         results = calculateStats(predictions, data["score_threshold"])
 
-        if plot and data["score_threshold"] > 1:
+        if plot and len(data["score_threshold"]) > 1:
             graphAll(results, data["output_path"])
-        elif plot and data["score_threshold"] <= 1:
+        elif plot and len(data["score_threshold"]) <= 1:
             print('You need more than one threshold to create a graph')
 
     elif data["framework"] == 'transformers': #huggingface
         analysis = Prediction_Analysis(
             transformers = data["transformers"].replace(' ', '').split(','),
-            folders = data["folders"].replace(' ', '').split(','),
+            folders = data["folders"],
             image_height = data["image_height"],
             image_width = data["image_width"],
-            score_threshold= data["score_threshold"],
-            dataset_class = data["dataset_class"],
-            output_path = data["output_path"])
+            score_threshold= data["score_threshold"])
+        
         predictions = analysis.getPredictions(mode= 'hf')
         results = calculateStats(predictions, data["score_threshold"])
 
@@ -407,7 +479,6 @@ if __name__ == "__main__":
     
         if choice.lower() == 't':
             train_and_save()
-            
         elif choice.lower() == 'p':
             analyze_data()
             
@@ -415,6 +486,5 @@ if __name__ == "__main__":
         
         if choice.lower == "c":
             continue
-            
         else:
             break
